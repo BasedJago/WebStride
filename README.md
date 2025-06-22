@@ -4,31 +4,7 @@ WebStride é uma ferramenta de automação web com interface gráfica (GUI), con
 
 O sistema combina a precisão do Selenium para interagir com elementos da web, a flexibilidade do PyAutoGUI para controle global do desktop e uma lógica de programação visual para criar fluxos de trabalho robustos.
 
-📸 Vitrine da Aplicação
-(Recomendação: Substitua o texto abaixo por um screenshot da interface principal do WebStride em execução)
 
-+-------------------------------------------------------------------------+
-| WebStride Automatizador                        [⚙] [?] [_] [X]          |
-+-------------------------------------------------------------------------+
-| Gerenciar Perfis: [Perfil Padrão ▼] [Novo] [Renomear] [Excluir]           |
-| [Importar Dados] C:\Data\users.csv                                      |
-+-------------------------------------------------------------------------+
-|  Navegador:     Ação:                                                   |
-|  (•) Chrome     [Clicar em Elemento                                ▼]   |
-|  ( ) Firefox    Nome/Descrição: [Login no sistema]                        |
-|  [ ] Headless   Tipo de Seletor: [CSS Selector ▼] Seletor: [#loginButton] |
-|                 ...                                                     |
-|                                                     [Adicionar Ação]    |
-+-------------------------------------------------------------------------+
-| ▼ Sequência de Ações do Perfil: 'Meu Perfil'                            |
-| | 1. [Acessar site] Abrir Site: https://meusite.com                     |
-| | 2. [Preencher user] Escrever em Campo: [ID] user | Valor: $Usuario1  |
-| | 3. [Preencher senha] Escrever em Campo: [ID] pass | Valor: $Senha1   |
-| | 4. Clicar em Elemento: [CSS Selector] #loginButton                    |
-| |                                                                       |
-+-------------------------------------------------------------------------+
-| [Editar Ação] [->] [<-] [Remover]            [Salvar] [■ Parar] [▶ Executar] |
-+-------------------------------------------------------------------------+
 ✨ Funcionalidades Principais
 Interface Visual Intuitiva: Crie automações complexas arrastando e soltando (futuro), editando e organizando ações em uma lista sequencial, sem escrever uma linha de código.
 Gerenciamento de Perfis: Salve diferentes sequências de automação como "Perfis". Cada perfil pode ter sua própria macro, navegador de preferência e arquivo de dados associado.
@@ -48,6 +24,8 @@ Controle de Execução: Inicie, pare o navegador a qualquer momento e acompanhe 
 Human-in-the-Loop: Pause a automação para solicitar verificação humana ou para que o usuário insira um dado específico através de uma caixa de diálogo.
 Logging Detalhado: A aplicação gera automaticamente arquivos log.txt e log_erro.txt no diretório C:\WebStride, facilitando a depuração de problemas.
 Persistência: Todas as configurações e perfis são salvos em um arquivo database.json, garantindo que seu trabalho nunca seja perdido.
+
+
 ⚙️ Como Funciona
 O WebStride opera sobre uma pilha de execução que interpreta a lista de ações que você construiu.
 
@@ -56,6 +34,8 @@ Construção da Macro: Você adiciona ações da lista suspensa, configurando pa
 Lógica de Controle: Você pode recuar/indentar ações para aninhá-las dentro de blocos de controle de fluxo, como Iniciar Loop ou Se (condição).
 Associação de Dados (Opcional): Você pode importar um arquivo .csv/.txt. As ações dentro de um Iniciar Loop irão iterar sobre as linhas deste arquivo, substituindo variáveis como $Coluna{N} pelos dados correspondentes da linha atual.
 Execução: Ao clicar em "Executar", um thread separado inicia o driver do Selenium (Chrome ou Firefox, visível ou headless) e começa a processar a lista de ações, uma por uma, resolvendo variáveis e executando as interações na página web.
+
+
 🚀 Instalação e Configuração
 Para executar o WebStride, você precisará do Python 3 e de algumas bibliotecas.
 
@@ -80,6 +60,7 @@ Google Chrome: Baixe o ChromeDriver correspondente à sua versão do Chrome aqui
 Mozilla Firefox: Baixe o GeckoDriver aqui.
 Importante: Após o download, descompacte o arquivo e coloque o executável (chromedriver.exe ou geckodriver.exe) em um local que esteja no PATH do seu sistema (como C:\Windows) ou na mesma pasta onde o script WebStride.py está localizado. Isso garante que o Selenium consiga encontrá-lo.
 
+
 📖 Guia de Uso Rápido
 Execute o Script:
 Bash
@@ -99,6 +80,8 @@ Execute a Automação:
 Selecione o navegador de sua preferência (Chrome/Firefox).
 Clique no botão verde ▶ Executar.
 Observe a Mágica: Uma nova janela do navegador será aberta e executará as ações que você definiu!
+
+
 🗂️ Estrutura de Arquivos Gerada
 Ao ser executado pela primeira vez, o WebStride criará a seguinte estrutura de diretórios em sua máquina:
 
@@ -110,6 +93,7 @@ C:\
     └── log_erro.txt       # Log de erros e exceções
 Qualquer arquivo gerado pela automação (como screenshots ou tabelas CSV) também será salvo dentro de C:\WebStride.
 
+
 🤝 Contribuições
 Contribuições são muito bem-vindas! Se você tem ideias para novas funcionalidades, melhorias na interface ou encontrou um bug, sinta-se à vontade para:
 
@@ -118,8 +102,7 @@ Criar uma nova branch (git checkout -b feature/NovaFuncionalidade).
 Fazer o commit de suas alterações (git commit -am 'Adiciona NovaFuncionalidade').
 Fazer o push para a branch (git push origin feature/NovaFuncionalidade).
 Abrir um Pull Request.
-📜 Licença
-Este projeto está sob a licença MIT. Veja o arquivo LICENSE.md para mais detalhes.
+
 
 
 
