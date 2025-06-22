@@ -1,6 +1,6 @@
 WebStride Automatizador
 
-WebStride é uma poderosa ferramenta de automação web com interface gráfica (GUI), construída em Python usando Tkinter e Selenium. Ela capacita usuários, mesmo sem conhecimento profundo de programação, a criar, gerenciar e executar macros complexas para automatizar tarefas repetitivas em qualquer website.
+WebStride é uma ferramenta de automação web com interface gráfica (GUI), construída em Python usando Tkinter e Selenium. Ela capacita usuários, mesmo sem conhecimento profundo de programação, a criar, gerenciar e executar macros complexas para automatizar tarefas repetitivas em qualquer website.
 
 O sistema combina a precisão do Selenium para interagir com elementos da web, a flexibilidade do PyAutoGUI para controle global do desktop e uma lógica de programação visual para criar fluxos de trabalho robustos.
 
