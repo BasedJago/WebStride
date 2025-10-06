@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox, simpledialog, Listbox, Scrollbar, Frame, Label, Entry, Button, OptionMenu, StringVar, Radiobutton, Toplevel, filedialog, Text, Checkbutton, BooleanVar, ttk
+from tkinter import messagebox, simpledialog, Listbox, Scrollbar, Frame, Label, Entry, Button, OptionMenu, StringVar, Radiobutton, Toplevel, filedialog, Text, Checkbutton, BooleanVar, ttk, scrolledtext
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -20,6 +20,23 @@ from functools import partial
 import webbrowser
 from datetime import datetime
 import pyautogui
+# Tenta importar as bibliotecas externas, dando um aviso se não estiverem instaladas
+try:
+    from PIL import ImageTk, Image
+except ImportError:
+    messagebox.showwarning("Biblioteca Faltando", "A biblioteca 'Pillow' não foi encontrada. Ações de imagem não funcionarão.\n\nInstale com: pip install Pillow")
+
+try:
+    import requests
+except ImportError:
+    messagebox.showwarning("Biblioteca Faltando", "A biblioteca 'requests' não foi encontrada. Ações de imagem por URL não funcionarão.\n\nInstale com: pip install requests")
+
+try:
+    from playsound import playsound
+except ImportError:
+    # Não mostra um popup para esta, apenas avisa no log, pois é menos crítica
+    logging.warning("A biblioteca 'playsound' não foi encontrada. Ações de áudio não funcionarão. Instale com: pip install playsound")
+from io import BytesIO
 
 # --- CLASSE PRINCIPAL DA APLICAÇÃO ---
 class AutomationGUI:
@@ -40,6 +57,11 @@ class AutomationGUI:
         self.db_file = os.path.join(self.db_path, "database.json")
         self.log_file = os.path.join(self.base_path, "log.txt")
         self.error_log_file = os.path.join(self.base_path, "log_erro.txt")
+        self.actions_path = os.path.join(self.base_path, "Acoes")
+        self.custom_actions = {} # Dicionário para guardar os dados das ações personalizadas
+
+        self.driver = None
+
 
         self.profiles_data = {}
         self.active_profile = ""
@@ -61,12 +83,14 @@ class AutomationGUI:
         self.raw_data_content = ""
         
         self.headless_var = BooleanVar(value=False)
+        self.ignore_errors_var = BooleanVar(value=False)
         self.drag_start_index = None
         self.internal_variables = {}
         
         self.dialog_result = None
         self.dialog_event = threading.Event()
         self.test_driver = None
+        self.action_filter_job = None
 
         # --- NOVA ESTRUTURA DE CATEGORIAS DE AÇÕES ---
         self.action_categories = {
@@ -194,7 +218,8 @@ class AutomationGUI:
         self._setup_logging()
         self._setup_styles()
         self._create_widgets()      
-        self._setup_data_storage()  
+        self._setup_data_storage()
+        self._load_custom_actions()
         self.load_initial_profile() 
 
     def _execute_dialog_on_main_thread(self, dialog_func_with_args):
@@ -202,17 +227,32 @@ class AutomationGUI:
         self.dialog_event.set()
 
     def _setup_logging(self):
-        if not os.path.exists(self.base_path): os.makedirs(self.base_path)
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        if not os.path.exists(self.base_path):
+            os.makedirs(self.base_path)
+
+        # Obtenha o logger raiz
         logger = logging.getLogger()
-        if not logger.handlers:
-            info_handler = logging.FileHandler(self.log_file, encoding='utf-8')
-            info_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-            error_handler = logging.FileHandler(self.error_log_file, encoding='utf-8')
-            error_handler.setLevel(logging.ERROR)
-            error_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(info_handler)
-            logger.addHandler(error_handler)
+        
+        # Evita adicionar handlers duplicados se este método for chamado mais de uma vez
+        if logger.hasHandlers():
+            logger.handlers.clear()
+
+        # MODIFICADO: Definimos o nível do logger diretamente.
+        logger.setLevel(logging.INFO)
+
+        # Handler para o arquivo de log geral (nível INFO)
+        info_handler = logging.FileHandler(self.log_file, encoding='utf-8')
+        info_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+
+        # Handler apenas para o arquivo de erros (nível ERROR)
+        error_handler = logging.FileHandler(self.error_log_file, encoding='utf-8')
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+        # Adiciona os dois handlers ao logger
+        logger.addHandler(info_handler)
+        logger.addHandler(error_handler)
+        
         logging.info("Aplicação iniciada.")
 
     def _setup_data_storage(self):
@@ -223,6 +263,125 @@ class AutomationGUI:
             messagebox.showerror("Erro de Diretório", f"Não foi possível criar o diretório {self.db_path}\nErro: {e}")
             logging.error(f"Falha ao criar diretório: {e}")
             self.root.quit()
+
+    def _load_custom_actions(self):
+        """
+        Carrega ações personalizadas da pasta 'Acoes' e as adiciona às listas de ações.
+        """
+        if not os.path.exists(self.actions_path):
+            os.makedirs(self.actions_path)
+            logging.info(f"Diretório de ações personalizadas criado em: {self.actions_path}")
+
+        self.custom_actions.clear()
+        
+        custom_action_names = []
+
+        for filename in os.listdir(self.actions_path):
+            if filename.endswith(".json"):
+                filepath = os.path.join(self.actions_path, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        action_data = json.load(f)
+                    
+                    # Validação básica
+                    if "name" in action_data and "code" in action_data:
+                        action_name = action_data["name"]
+                        self.custom_actions[action_name] = action_data
+                        custom_action_names.append(action_name)
+                        
+                        # Adiciona a ação ao mapa de execução
+                        if action_name not in self.ACTION_MAP:
+                            self.ACTION_MAP[action_name] = self.act_execute_custom_action
+
+                except Exception as e:
+                    logging.error(f"Falha ao carregar ação personalizada de '{filepath}': {e}")
+        
+        # Adiciona a nova categoria e suas ações, se houver alguma
+        if custom_action_names:
+            category_name = "Ações Personalizadas"
+            self.action_categories[category_name] = sorted(custom_action_names)
+            logging.info(f"{len(custom_action_names)} ações personalizadas carregadas.")
+        
+        # Recria as listas de ações para o Combobox
+        self.flat_action_list = sorted(list(self.ACTION_MAP.keys()))
+        
+        self.categorized_action_list = []
+        for category, actions in self.action_categories.items():
+            self.categorized_action_list.append(f"--- {category.upper()} ---")
+            self.categorized_action_list.extend(sorted(actions))
+
+    def act_execute_custom_action(self, action_data):
+        """
+        Executa o código de uma ação personalizada.
+        """
+        action_name = action_data.get('action')
+        custom_action_info = self.custom_actions.get(action_name)
+
+        if not custom_action_info:
+            raise ValueError(f"Ação personalizada '{action_name}' não encontrada.")
+
+        custom_code = custom_action_info.get("code")
+
+        logging.info(f"Executando código da ação personalizada: '{action_name}'")
+
+        # Prepara um ambiente seguro para a execução do código
+        # Passamos as ferramentas úteis para o escopo do código a ser executado
+        execution_scope = {
+            # Ferramentas do WebStride
+            "driver": self.driver,
+            "action_data": action_data,
+            "internal_variables": self.internal_variables,
+            "find_element": self._find_element,
+            "base_path": self.base_path,
+            "imported_data": self.imported_data,
+            "root": self.root, # Passa a janela principal para referência
+            
+            # Bibliotecas de automação
+            "pyautogui": pyautogui,
+            "ActionChains": ActionChains,
+            "Keys": Keys,
+            "By": By,
+            "EC": EC,
+            "WebDriverWait": WebDriverWait,
+
+            # Ferramentas do Tkinter para UI
+            "tk": tk,
+            "messagebox": messagebox,
+            "simpledialog": simpledialog,
+            "filedialog": filedialog,
+            "scrolledtext": scrolledtext,
+            "ttk": ttk,
+            
+            # Ferramentas de Imagem (se 'Pillow' estiver instalado)
+            "Image": Image if 'Image' in globals() else None,
+            "ImageTk": ImageTk if 'ImageTk' in globals() else None,
+            
+            # Ferramentas de Web e Áudio (se instaladas)
+            "requests": requests if 'requests' in globals() else None,
+            "playsound": playsound if 'playsound' in globals() else None,
+
+            # Módulos padrão do Python
+            "os": os,
+            "time": time,
+            "logging": logging,
+            "BytesIO": BytesIO,
+            "datetime": datetime,
+            "re": re,
+            "json": json
+        }
+
+        try:
+            # A execução acontece aqui!
+            exec(custom_code, {"__builtins__": __builtins__}, execution_scope)
+            
+            # Atualiza as variáveis internas caso o script as tenha modificado
+            self.internal_variables.update(execution_scope['internal_variables'])
+            self.root.after(0, self._update_variable_display)
+
+        except Exception as e:
+            logging.error(f"Erro ao executar o código da ação personalizada '{action_name}': {e}", exc_info=True)
+            # Re-lança a exceção para que o loop principal de automação possa tratá-la
+            raise e
 
     def _setup_styles(self):
         self.style = {
@@ -247,8 +406,10 @@ class AutomationGUI:
         self.profile_menu.pack(side=tk.LEFT, padx=5)
         Button(profile_frame, text="Novo", command=self.create_new_profile, bg=self.style["button_bg"], fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
         Button(profile_frame, text="Renomear", command=self.rename_profile, bg=self.style["button_bg"], fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
+        Button(profile_frame, text="Importar", command=self.import_profile, bg="#007ACC", fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(20, 5)) # Adiciona um espaçamento à esquerda
+        Button(profile_frame, text="Exportar", command=self.export_profile, bg=self.style["button_bg"], fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
         Button(profile_frame, text="Excluir", command=self.delete_profile, bg="#C82333", fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
-        
+               
         data_import_frame = Frame(self.root, bg="#252526", padx=10, pady=5)
         data_import_frame.pack(fill=tk.X, side=tk.TOP)
         Button(data_import_frame, text="Importar Dados", command=self.import_data_file, bg=self.style["accent_color"], fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
@@ -321,6 +482,24 @@ class AutomationGUI:
         
         Button(tools_frame, text="Abrir Navegador de Teste", command=self.open_test_browser, bg="#007ACC", fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
         Button(tools_frame, text="Fechar Navegador de Teste", command=self.close_test_browser, bg="#5E5E5E", fg=self.style["fg"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
+        Button(tools_frame, text="Gerenciar Ações", command=self.open_action_manager, bg="#FFC107", fg="#000000", relief=tk.FLAT).pack(side=tk.LEFT, padx=(15, 5))
+        
+        # Frame para agrupar os widgets de captura de posição
+        pos_capture_frame = Frame(tools_frame, bg="#252526")
+        pos_capture_frame.pack(side=tk.LEFT, padx=15)
+
+        Label(pos_capture_frame, text="Capturar Posição:", bg="#252526", fg=self.style["fg"]).pack(side=tk.LEFT, padx=(0,10))
+
+        Label(pos_capture_frame, text="X:", bg="#252526", fg=self.style["fg"]).pack(side=tk.LEFT)
+        self.pos_x_entry = Entry(pos_capture_frame, width=6, bg=self.style["entry_bg"], fg=self.style["fg"], insertbackground=self.style["fg"], relief=tk.FLAT)
+        self.pos_x_entry.pack(side=tk.LEFT, padx=(0, 5))
+
+        Label(pos_capture_frame, text="Y:", bg="#252526", fg=self.style["fg"]).pack(side=tk.LEFT)
+        self.pos_y_entry = Entry(pos_capture_frame, width=6, bg=self.style["entry_bg"], fg=self.style["fg"], insertbackground=self.style["fg"], relief=tk.FLAT)
+        self.pos_y_entry.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.capture_pos_button = Button(pos_capture_frame, text="Capturar XY (5s)", command=self.start_capture_position_thread, bg="#5E5E5E", fg=self.style["fg"], relief=tk.FLAT)
+        self.capture_pos_button.pack(side=tk.LEFT)
 
         list_controls_frame = Frame(bottom_frame, bg=self.style["bg"])
         list_controls_frame.pack(side=tk.LEFT)
@@ -487,6 +666,17 @@ class AutomationGUI:
             logging.error(f"Erro ao abrir o tutorial: {e}")
             messagebox.showerror("Erro", f"Não foi possível abrir o link do tutorial.\n\n{e}")
 
+    def open_action_manager(self):
+        """Abre a janela do gerenciador de ações personalizadas."""
+        # Lista de parâmetros disponíveis no escopo de execução da ação personalizada.
+        # Obtemos dinamicamente para garantir que a lista esteja sempre atualizada.
+        available_params = [
+            "driver", "action_data", "internal_variables", "find_element",
+            "pyautogui", "messagebox", "os", "time", "By", "ActionChains",
+            "Keys", "EC", "WebDriverWait", "logging", "base_path"
+        ]
+        ActionManager(self, available_params)
+
     def open_settings_window(self):
         # TO-DO: Carregar as configurações salvas (do database.json, por exemplo)
         
@@ -526,6 +716,20 @@ class AutomationGUI:
         button_frame = Frame(main_frame, bg=self.style["bg"])
         button_frame.grid(row=3, column=0, columnspan=2, pady=20, sticky='e')
 
+        # --- NOVA OPÇÃO PARA IGNORAR ERROS ---
+        Label(main_frame, text="Execução:", bg=self.style["bg"], fg=self.style["fg"]).grid(row=3, column=0, padx=5, pady=8, sticky='w')
+        ignore_errors_check = Checkbutton(main_frame, 
+                                          text="Ignorar erros durante a automação e continuar para a próxima ação", 
+                                          variable=self.ignore_errors_var,
+                                          bg=self.style["bg"], 
+                                          fg=self.style["fg"], 
+                                          selectcolor=self.style["entry_bg"], 
+                                          activebackground=self.style["bg"], 
+                                          activeforeground=self.style["fg"],
+                                          wraplength=400, # Quebra o texto se for muito longo
+                                          justify=tk.LEFT)
+        ignore_errors_check.grid(row=3, column=1, padx=5, pady=8, sticky='w')
+
         def save_settings():
             # TO-DO: Lógica para salvar os valores dos campos Entry
             # Ex: self.config['base_path'] = base_path_entry.get()
@@ -545,31 +749,70 @@ class AutomationGUI:
                 logging.info(f"Caminho do arquivo '{filepath}' salvo para o perfil '{self.active_profile}'.")
 
     def _load_data_from_path(self, filepath):
+        # Lista de codificações comuns a serem testadas
+        encodings_to_try = ['utf-8', 'latin-1', 'cp1252']
+        
+        file_content = None
+        
+        # Loop para tentar abrir o arquivo com cada codificação
+        for encoding in encodings_to_try:
+            try:
+                with open(filepath, 'r', encoding=encoding) as f:
+                    file_content = f.read()
+                # Se a leitura for bem-sucedida, registra qual codificação funcionou e sai do loop
+                logging.info(f"Arquivo '{filepath}' lido com sucesso usando a codificação '{encoding}'.")
+                break 
+            except UnicodeDecodeError:
+                # Se a codificação falhar, avisa no log e tenta a próxima
+                logging.warning(f"Falha ao ler o arquivo com a codificação '{encoding}'. Tentando a próxima.")
+                continue
+            except Exception as e:
+                # Para outros erros (ex: arquivo não encontrado), mostra o erro e para
+                self._clear_imported_data()
+                logging.error(f"Falha ao importar dados de {filepath}: {e}")
+                messagebox.showerror("Erro de Importação", f"Não foi possível ler o arquivo de dados.\nVerifique o formato e o caminho.\nErro: {e}")
+                return False
+
+        # Se, após o loop, nenhum conteúdo foi lido, é porque todas as codificações falharam
+        if file_content is None:
+            self._clear_imported_data()
+            error_msg = f"Não foi possível decodificar o arquivo '{os.path.basename(filepath)}'.\n\nEle não parece estar em UTF-8, Latin-1 ou CP1252."
+            logging.error(error_msg)
+            messagebox.showerror("Erro de Codificação", error_msg)
+            return False
+
+        # --- A partir daqui, processa o conteúdo que foi lido com sucesso ---
         try:
-            self.raw_data_content = ""
+            self.raw_data_content = file_content
             rows = []
-            with open(filepath, 'r', encoding='utf-8') as f:
-                self.raw_data_content = f.read()
-                f.seek(0)
-                if filepath.lower().endswith('.csv'):
-                    reader = csv.reader(f, delimiter=';')
-                    headers = next(reader)
-                    for row in reader:
-                        rows.append(row)
-                else: 
-                    lines = f.readlines()
-                    if not lines: raise ValueError("O arquivo de dados está vazio.")
-                    headers = [h.strip() for h in lines[0].split(';')]
-                    rows = [[cell.strip() for cell in line.split(';')] for line in lines[1:]]
+            
+            # Usa io.StringIO para tratar o texto lido como se fosse um arquivo em memória
+            from io import StringIO
+            file_stream = StringIO(self.raw_data_content)
+            
+            if filepath.lower().endswith('.csv'):
+                reader = csv.reader(file_stream, delimiter=';')
+                headers = next(reader)
+                for row in reader:
+                    rows.append(row)
+            else: 
+                lines = file_stream.readlines()
+                if not lines: raise ValueError("O arquivo de dados está vazio.")
+                # Remove o BOM (Byte Order Mark), um caractere invisível que pode aparecer no início de arquivos UTF-8
+                lines[0] = lines[0].lstrip('\ufeff')
+                headers = [h.strip() for h in lines[0].split(';')]
+                rows = [[cell.strip() for cell in line.split(';')] for line in lines[1:]]
             
             self.imported_data = {"headers": headers, "rows": rows}
             self.imported_data_path_var.set(filepath)
-            logging.info(f"Arquivo de dados carregado com sucesso: {filepath}")
+            logging.info(f"Dados do arquivo processados com sucesso: {filepath}")
             return True
+
         except Exception as e:
+            # Se ocorrer um erro durante o processamento do conteúdo (ex: CSV mal formatado)
             self._clear_imported_data()
-            logging.error(f"Falha ao importar dados de {filepath}: {e}")
-            messagebox.showerror("Erro de Importação", f"Não foi possível ler o arquivo de dados.\nVerifique o formato e o caminho.\nErro: {e}")
+            logging.error(f"Falha ao processar os dados de {filepath} após a leitura: {e}")
+            messagebox.showerror("Erro de Processamento", f"O arquivo foi lido, mas houve um erro ao processar seu conteúdo.\nVerifique a estrutura do CSV/TXT.\nErro: {e}")
             return False
             
     def _clear_imported_data(self):
@@ -684,6 +927,110 @@ class AutomationGUI:
 
         return resolved_text
 
+    def export_profile(self):
+        """
+        Exporta o perfil ativo para um arquivo JSON.
+        """
+        if not self.active_profile:
+            messagebox.showwarning("Nenhum Perfil Selecionado", "Por favor, selecione um perfil para exportar.")
+            return
+
+        # Pede ao usuário para escolher onde salvar o arquivo
+        filepath = filedialog.asksaveasfilename(
+            title="Exportar Perfil Como...",
+            initialfile=f"{self.active_profile}.json",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+
+        if not filepath:
+            logging.info("Exportação de perfil cancelada pelo usuário.")
+            return
+
+        try:
+            # Obtém os dados apenas do perfil ativo
+            profile_data_to_export = self.profiles_data["profiles"][self.active_profile]
+
+            # Salva os dados no arquivo JSON escolhido
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(profile_data_to_export, f, indent=4)
+
+            logging.info(f"Perfil '{self.active_profile}' exportado com sucesso para '{filepath}'.")
+            messagebox.showinfo("Exportação Concluída", f"O perfil '{self.active_profile}' foi exportado com sucesso!")
+
+        except Exception as e:
+            error_msg = f"Falha ao exportar o perfil para '{filepath}'. Erro: {e}"
+            logging.error(error_msg)
+            messagebox.showerror("Erro de Exportação", error_msg)
+
+    def import_profile(self):
+        """
+        Importa um perfil de um arquivo JSON para a base de dados da aplicação.
+        """
+        filepath = filedialog.askopenfilename(
+            title="Importar Perfil de...",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+
+        if not filepath:
+            logging.info("Importação de perfil cancelada pelo usuário.")
+            return
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                imported_data = json.load(f)
+
+            # Validação básica para garantir que o arquivo tem a estrutura mínima
+            if not isinstance(imported_data, dict) or "actions" not in imported_data:
+                raise ValueError("O arquivo selecionado não parece ser um perfil válido do WebStride.")
+            
+            # Garante que chaves opcionais existam para consistência
+            if "data_file_path" not in imported_data:
+                imported_data["data_file_path"] = ""
+            for action in imported_data.get("actions", []):
+                action.setdefault("indent", 0)
+                action.setdefault("description", "")
+                action.setdefault("param3", "")
+
+
+            # Pega o nome do arquivo como nome inicial do perfil
+            profile_name = os.path.splitext(os.path.basename(filepath))[0]
+
+            # Verifica se já existe um perfil com esse nome
+            while profile_name in self.profiles_data["profiles"]:
+                new_name = simpledialog.askstring(
+                    "Conflito de Nomes",
+                    f"Um perfil chamado '{profile_name}' já existe.\n\nPor favor, digite um novo nome para o perfil importado:",
+                    parent=self.root
+                )
+                if new_name is None: # Usuário clicou em Cancelar
+                    logging.warning("Importação cancelada devido a conflito de nome.")
+                    return
+                profile_name = new_name.strip()
+                if not profile_name: # Usuário digitou um nome vazio
+                    messagebox.showwarning("Nome Inválido", "O nome do perfil não pode ser vazio.", parent=self.root)
+                    profile_name = os.path.splitext(os.path.basename(filepath))[0] # Reseta para tentar de novo
+
+            # Adiciona o novo perfil aos dados da aplicação
+            self.profiles_data["profiles"][profile_name] = imported_data
+
+            # Atualiza a UI e muda para o perfil recém-importado
+            self._update_profile_menu()
+            self.profile_var.set(profile_name)
+            self.switch_profile()
+
+            logging.info(f"Perfil importado de '{filepath}' e salvo como '{profile_name}'.")
+            messagebox.showinfo("Importação Concluída", f"O perfil '{profile_name}' foi importado com sucesso e está ativo.")
+
+        except json.JSONDecodeError:
+            error_msg = "O arquivo selecionado não é um JSON válido."
+            logging.error(f"{error_msg} Caminho: {filepath}")
+            messagebox.showerror("Erro de Importação", error_msg)
+        except Exception as e:
+            error_msg = f"Falha ao importar o perfil de '{filepath}'.\n\nErro: {e}"
+            logging.error(error_msg)
+            messagebox.showerror("Erro de Importação", error_msg)
+
     def load_initial_profile(self):
         last_profile = self.profiles_data.get("last_open_profile")
         profiles = list(self.profiles_data.get("profiles", {}).keys())
@@ -777,6 +1124,34 @@ class AutomationGUI:
         self.param3_label.grid_remove(); self.param3_entry.grid_remove()
         self.test_selector_button.grid_remove()
         
+        action = self.action_var.get()
+        self.selector_type_label.grid_remove(); self.selector_type_menu.grid_remove()
+        self.param_label.grid_remove(); self.param_entry.grid_remove()
+        self.param2_label.grid_remove(); self.param2_entry.grid_remove()
+        self.param3_label.grid_remove(); self.param3_entry.grid_remove()
+        self.test_selector_button.grid_remove()
+        
+        # --- NOVO BLOCO PARA AÇÕES PERSONALIZADAS ---
+        if action in self.custom_actions:
+            custom_action_data = self.custom_actions[action]
+            params = custom_action_data.get("parameters", [])
+
+            if len(params) > 0:
+                self.param_label.config(text=f"{params[0]}:")
+                self.param_label.grid(row=3, column=0, padx=5, pady=2, sticky='w')
+                self.param_entry.grid(row=3, column=1, columnspan=2, padx=5, pady=2, sticky='ew')
+            if len(params) > 1:
+                self.param2_label.config(text=f"{params[1]}:")
+                self.param2_label.grid(row=4, column=0, padx=5, pady=2, sticky='w')
+                self.param2_entry.grid(row=4, column=1, columnspan=2, padx=5, pady=2, sticky='ew')
+            if len(params) > 2:
+                self.param3_label.config(text=f"{params[2]}:")
+                self.param3_label.grid(row=5, column=0, padx=5, pady=2, sticky='w')
+                self.param3_entry.grid(row=5, column=1, columnspan=2, padx=5, pady=2, sticky='ew')
+            
+            # Aqui garantimos que o resto da função não execute para ações personalizadas
+            return
+        
         no_param_actions = ["Pressionar Enter", "Esperar Verificação Humana", "Iniciar Loop", "Fim do Loop", 
                             "Senão", "Fim Se", "Fechar Aba", "Fim do Loop e Perguntar", "Atualizar Página (F5)",
                             "Navegar (Voltar)", "Navegar (Avançar)", "Aguardar Fechamento do Navegador"]
@@ -839,38 +1214,34 @@ class AutomationGUI:
             self.param3_label.grid(row=5, column=0, padx=5, pady=2, sticky='w')
             self.param3_entry.grid(row=5, column=1, columnspan=2, padx=5, pady=2, sticky='ew')
 
-    # CÓDIGO A SER SUBSTITUÍDO
     def _update_action_combobox_filter(self, event=None):
-        """Filtra a lista de ações e abre o dropdown, ignorando os separadores."""
+        """Agenda a filtragem da lista de ações após uma pausa na digitação."""
+        # Cancela qualquer agendamento anterior para evitar execuções múltiplas
+        if self.action_filter_job:
+            self.root.after_cancel(self.action_filter_job)
+        
+        # Agenda a execução da função de filtro real para daqui a 300ms
+        self.action_filter_job = self.root.after(300, self._perform_action_filter)
+
+    def _perform_action_filter(self):
+        """Executa a lógica de filtragem do combobox de ações."""
         cursor_pos = self.action_menu.index(tk.INSERT)
         typed_text = self.action_var.get()
-        
-        # Ignora teclas que não devem acionar o filtro
-        if event and event.keysym in ('Down', 'Up', 'Return', 'Escape', 'Tab', 'Right', 'Left', 'Home', 'End'):
-            # Se a lista estiver filtrada e o usuário pressionar Esc, restaura a lista completa
-            if event.keysym == 'Escape':
-                self.action_menu['values'] = self.categorized_action_list
-            return
 
-        # Se não houver texto digitado, exibe a lista completa com categorias
         if not typed_text:
             self.action_menu['values'] = self.categorized_action_list
             return
 
-        # Se houver texto, filtra a lista de ações "reais" (sem os separadores)
         filtered_list = [
             action for action in self.flat_action_list 
             if typed_text.lower() in action.lower()
         ]
         
-        # Atualiza o menu com os resultados filtrados
         self.action_menu['values'] = filtered_list
         self.action_menu.icursor(cursor_pos)
 
-        # Força a abertura do menu se houver resultados
-        if filtered_list and (not event or event.keysym != 'BackSpace'):
-            # Atraso mínimo para garantir que a UI atualizou os valores antes de abrir
-            self.action_menu.after(50, lambda: self.action_menu.event_generate('<Down>'))
+        if filtered_list:
+            self.action_menu.event_generate('<Down>')
 
     def test_selector(self):
         active_driver = self.test_driver if self.test_driver and self.test_driver.window_handles else self.driver
@@ -941,7 +1312,8 @@ class AutomationGUI:
                     self.listbox.itemconfig(tk.END, {'fg': self.style["separator_color"]})
                     continue 
 
-                while len(numbering_stack) > indent_level: numbering_stack.pop()
+                while len(numbering_stack) > indent_level + 1: 
+                        numbering_stack.pop()
                 if len(numbering_stack) <= indent_level:
                     numbering_stack.append(1)
                 else:
@@ -1264,13 +1636,27 @@ class AutomationGUI:
                     if exec_stack and exec_stack[-1]['type'] in ['if', 'elif']: exec_stack.pop()
                     pc += 1
                 
-                else: 
-                    loop_iter = self._get_current_loop_iter(exec_stack)
-                    resolved_action = self._resolve_action_variables(action_data, loop_iter)
-                    logging.info(f"Executando ação: {resolved_action.get('action')}")
-                    if resolved_action.get("action") in self.ACTION_MAP:
-                        self.ACTION_MAP[resolved_action.get("action")](resolved_action)
-                    pc += 1
+                else:
+                    try:
+                        loop_iter = self._get_current_loop_iter(exec_stack)
+                        resolved_action = self._resolve_action_variables(action_data, loop_iter)
+                        logging.info(f"Executando ação {pc + 1}: {resolved_action.get('action')}")
+                        if resolved_action.get("action") in self.ACTION_MAP:
+                            self.ACTION_MAP[resolved_action.get("action")](resolved_action)
+                    
+                    except Exception as e:
+                        # Verifica se a opção de ignorar erros está ativa
+                        if self.ignore_errors_var.get():
+                            # Se estiver, apenas registra o erro e continua para a próxima ação
+                            error_msg = f"ERRO IGNORADO na ação {pc + 1} ('{action_data.get('action')}'): {e}"
+                            logging.error(error_msg, exc_info=False) # exc_info=False para não poluir o log com tracebacks de erros ignorados
+                        else:
+                            # Se a opção não estiver marcada, o erro para a automação (comportamento original)
+                            raise e # Re-lança a exceção para ser capturada pelo bloco try...except principal que envolve o while
+                    
+                    finally:
+                        # O contador de ações (pc) sempre avança, seja em sucesso ou em erro ignorado.
+                        pc += 1
 
             self._write_data_to_txt_if_needed()
             self.root.after(0, messagebox.showinfo, "Sucesso", f"Automação do perfil '{self.active_profile}' concluída!")
@@ -1844,9 +2230,342 @@ class AutomationGUI:
         logging.info(f"Ação movida de {self.drag_start_index + 1} para {drop_index + 1}.")
         self.drag_start_index = None
         self.update_listbox()
+        self.listbox.see(drop_index)
+
+    def start_capture_position_thread(self):
+        """Inicia a captura de posição em uma thread separada para não congelar a UI."""
+        # Desabilita o botão e muda o texto para dar feedback ao usuário
+        self.capture_pos_button.config(state=tk.DISABLED)
+        threading.Thread(target=self._capture_and_update_position, daemon=True).start()
+
+    def _capture_and_update_position(self):
+        """Espera 5 segundos com contagem regressiva, captura a posição do mouse e agenda a atualização da UI."""
+        try:
+            # Mostra uma contagem regressiva no botão
+            for i in range(5, 0, -1):
+                # Usa self.root.after para garantir que a atualização do texto do botão ocorra na thread principal da UI
+                self.root.after(0, self.capture_pos_button.config, {'text': f'Posicione... {i}'})
+                time.sleep(1)
+
+            position = pyautogui.position()
+            
+            # Agenda a atualização dos campos de texto na thread principal do Tkinter
+            self.root.after(0, self._update_position_entries, position)
+        
+        finally:
+            # Garante que o botão seja reativado e o texto restaurado, mesmo que ocorra um erro
+            self.root.after(0, self.capture_pos_button.config, {'state': tk.NORMAL, 'text': 'Capturar XY (5s)'})
+
+    def _update_position_entries(self, position):
+        """Função segura para atualizar os widgets de Entry com as coordenadas X e Y."""
+        # Limpa os campos antes de inserir os novos valores
+        self.pos_x_entry.delete(0, tk.END)
+        self.pos_x_entry.insert(0, str(position.x))
+        
+        self.pos_y_entry.delete(0, tk.END)
+        self.pos_y_entry.insert(0, str(position.y))
+        
+        # Bônus: Copia as coordenadas para a área de transferência para facilitar o uso
+        coords_string = f"{position.x},{position.y}"
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(coords_string)
+            logging.info(f"Posição do mouse capturada: ({coords_string}). Coordenadas copiadas para a área de transferência.")
+        except tk.TclError:
+            logging.warning("Não foi possível acessar a área de transferência.")
+
 
 
 class UserCancelledException(Exception): pass
+
+class Tooltip:
+    """
+    Cria uma dica (tooltip) para um widget tkinter.
+    """
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        self.widget.bind("<Enter>", self.show_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+
+    def show_tip(self, event=None):
+        """Mostra a janela da dica."""
+        if self.tip_window or not self.text:
+            return
+            
+        x, y, _, _ = self.widget.bbox("insert")
+        x = x + self.widget.winfo_rootx() + 25
+        y = y + self.widget.winfo_rooty() + 25
+        
+        self.tip_window = Toplevel(self.widget)
+        self.tip_window.wm_overrideredirect(True)
+        self.tip_window.wm_geometry(f"+{x}+{y}")
+        
+        label = Label(self.tip_window, text=self.text, justify=tk.LEFT,
+                      background="#3C3C3C", relief=tk.SOLID, borderwidth=1,
+                      fg="#FFFFFF", font=("Arial", "9", "normal"), padx=8, pady=5)
+        label.pack(ipadx=1)
+
+    def hide_tip(self, event=None):
+        """Esconde a janela da dica."""
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
+
+class ActionManager(Toplevel):
+    def __init__(self, parent, available_params):
+        super().__init__(parent.root) 
+        self.parent = parent
+        self.available_params = available_params
+        self.style = parent.style
+        self.actions_path = parent.actions_path
+
+        self.title("Gerenciador de Ações Personalizadas")
+        self.geometry("900x600")
+        self.configure(bg=self.style["bg"])
+        self.transient(parent.root)
+        self.grab_set()
+
+        self.current_action_name = None
+
+        self._create_widgets()
+        self.load_actions_to_listbox()
+
+    def _create_widgets(self):
+        # Frame principal
+        main_frame = Frame(self, bg=self.style["bg"], padx=10, pady=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.grid_columnconfigure(1, weight=1)
+        main_frame.grid_rowconfigure(0, weight=1)
+
+        # --- LADO ESQUERDO: LISTA DE AÇÕES ---
+        left_frame = Frame(main_frame, bg=self.style["bg"])
+        left_frame.grid(row=0, column=0, sticky='ns', padx=(0, 10))
+
+        Label(left_frame, text="Ações Salvas:", bg=self.style["bg"], fg=self.style["fg"]).pack(anchor='w')
+        self.action_listbox = Listbox(left_frame, bg=self.style["listbox_bg"], fg=self.style["fg"], selectbackground=self.style["accent_color"], relief=tk.FLAT, width=30)
+        self.action_listbox.pack(fill=tk.Y, expand=True)
+        self.action_listbox.bind("<<ListboxSelect>>", self.on_action_select)
+
+        # Botões da lista
+        left_button_frame = Frame(left_frame, bg=self.style["bg"])
+        left_button_frame.pack(fill=tk.X, pady=5)
+        Button(left_button_frame, text="Novo", command=self.new_action, bg=self.style["button_bg"], fg=self.style["fg"]).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        Button(left_button_frame, text="Importar", command=self.import_custom_action, bg="#007ACC", fg=self.style["fg"]).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        Button(left_button_frame, text="Excluir", command=self.delete_action, bg="#C82333", fg=self.style["fg"]).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+
+        # --- LADO DIREITO: EDITOR ---
+        right_frame = Frame(main_frame, bg="#252526", padx=10, pady=10)
+        right_frame.grid(row=0, column=1, sticky='nsew')
+        right_frame.grid_columnconfigure(1, weight=1)
+        right_frame.grid_rowconfigure(4, weight=1)
+
+        # Campos de metadados
+        Label(right_frame, text="Nome da Ação:", bg="#252526", fg=self.style["fg"]).grid(row=0, column=0, sticky='w', pady=2)
+        self.name_entry = Entry(right_frame, bg=self.style["entry_bg"], fg=self.style["fg"])
+        self.name_entry.grid(row=0, column=1, sticky='ew', pady=2)
+
+        Label(right_frame, text="Descrição:", bg="#252526", fg=self.style["fg"]).grid(row=1, column=0, sticky='w', pady=2)
+        self.desc_entry = Entry(right_frame, bg=self.style["entry_bg"], fg=self.style["fg"])
+        self.desc_entry.grid(row=1, column=1, sticky='ew', pady=2)
+
+        # --- Frame para o label e o ícone de ajuda ---
+        param_label_frame = Frame(right_frame, bg="#252526")
+        param_label_frame.grid(row=2, column=0, sticky='w', pady=2)
+
+        Label(param_label_frame, text="Parâmetros (separados por vírgula):", bg="#252526", fg=self.style["fg"]).pack(side=tk.LEFT)
+
+        # --- Ícone de ajuda (?) ---
+        help_icon = Label(param_label_frame, text=" (?)", bg="#252526", fg=self.style["link_color"], cursor="hand2")
+        help_icon.pack(side=tk.LEFT, padx=4)
+
+        # --- Criação do texto da dica ---
+        tooltip_text = "Parâmetros disponíveis para uso no código Python:\n\n" + "\n".join(f"• {p}" for p in sorted(self.available_params))
+        Tooltip(help_icon, tooltip_text)
+
+        self.params_entry = Entry(right_frame, bg=self.style["entry_bg"], fg=self.style["fg"])
+        self.params_entry.grid(row=2, column=1, sticky='ew', pady=2)
+        
+        Label(right_frame, text="Código Python:", bg="#252526", fg=self.style["fg"]).grid(row=3, column=0, columnspan=2, sticky='w', pady=(10, 2))
+        
+        # Campo de texto para o código
+        self.code_text = Text(right_frame, bg=self.style["entry_bg"], fg=self.style["fg"], insertbackground=self.style["fg"], wrap=tk.WORD, height=15, undo=True)
+        self.code_text.grid(row=4, column=0, columnspan=2, sticky='nsew')
+        
+        # Botão Salvar
+        Button(right_frame, text="Salvar Ação", command=self.save_action, bg=self.style["accent_color"], fg=self.style["fg"]).grid(row=5, column=1, sticky='e', pady=(10, 0))
+
+    def load_actions_to_listbox(self):
+        self.action_listbox.delete(0, tk.END)
+        for name in sorted(self.parent.custom_actions.keys()):
+            self.action_listbox.insert(tk.END, name)
+
+    def on_action_select(self, event=None):
+        selection = self.action_listbox.curselection()
+        if not selection:
+            return
+
+        action_name = self.action_listbox.get(selection[0])
+        self.current_action_name = action_name
+        
+        action_data = self.parent.custom_actions.get(action_name)
+        if not action_data: return
+
+        # Preenche os campos do editor
+        self.name_entry.delete(0, tk.END)
+        self.name_entry.insert(0, action_data.get("name", ""))
+        
+        self.desc_entry.delete(0, tk.END)
+        self.desc_entry.insert(0, action_data.get("description", ""))
+        
+        self.params_entry.delete(0, tk.END)
+        self.params_entry.insert(0, ", ".join(action_data.get("parameters", [])))
+
+        self.code_text.delete("1.0", tk.END)
+        self.code_text.insert("1.0", action_data.get("code", "# Escreva seu código aqui"))
+
+    def new_action(self):
+        self.current_action_name = None
+        self.name_entry.delete(0, tk.END)
+        self.desc_entry.delete(0, tk.END)
+        self.params_entry.delete(0, tk.END)
+        self.code_text.delete("1.0", tk.END)
+        
+        # Código de exemplo para ajudar o usuário
+        sample_code = (
+            '# Exemplo de ação: Abrir site e verificar título\n'
+            '# Parâmetros disponíveis: action_data, driver, internal_variables, find_element, etc.\n\n'
+            'url = action_data.get("param") # O primeiro parâmetro da ação\n'
+            'expected_title_part = action_data.get("param2") # O segundo parâmetro\n'
+            'var_to_save = action_data.get("param3")\n\n'
+            'if not url:\n'
+            '    logging.error("URL não fornecida no param1 da ação")\n'
+            '    return\n\n'
+            'logging.info(f"Navegando para {url}")\n'
+            'driver.get(url)\n\n'
+            'if expected_title_part in driver.title:\n'
+            '    logging.info("Título esperado encontrado!")\n'
+            '    # Salva o resultado em uma variável interna\n'
+            '    if var_to_save:\n'
+            '        internal_variables[var_to_save] = "Sucesso"\n'
+            'else:\n'
+            '    logging.warning("Título esperado NÃO encontrado.")\n'
+            '    if var_to_save:\n'
+            '        internal_variables[var_to_save] = "Falha"\n'
+        )
+        self.code_text.insert("1.0", sample_code)
+        self.name_entry.focus_set()
+
+    def import_custom_action(self):
+        """Abre um diálogo para importar uma ação personalizada de um arquivo .json."""
+        filepath = filedialog.askopenfilename(
+            title="Importar Ação Personalizada de...",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            parent=self
+        )
+
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                imported_data = json.load(f)
+
+            # Validação básica
+            if not isinstance(imported_data, dict) or "name" not in imported_data or "code" not in imported_data:
+                raise ValueError("O arquivo não parece ser uma Ação Personalizada válida.")
+
+            action_name = imported_data["name"]
+            safe_filename = "".join(c for c in action_name if c.isalnum() or c in (' ', '_')).rstrip()
+            dest_filepath = os.path.join(self.actions_path, f"{safe_filename}.json")
+
+            if os.path.exists(dest_filepath):
+                if not messagebox.askyesno("Confirmar Substituição", 
+                                           f"A ação '{action_name}' já existe. Deseja substituí-la?",
+                                           parent=self):
+                    return
+
+            # Salva o novo arquivo na pasta de ações
+            with open(dest_filepath, 'w', encoding='utf-8') as f:
+                json.dump(imported_data, f, indent=4)
+
+            messagebox.showinfo("Sucesso", f"Ação '{action_name}' importada com sucesso!", parent=self)
+            
+            # Recarrega tudo
+            self.parent._load_custom_actions()
+            self.parent.action_menu['values'] = self.parent.categorized_action_list
+            self.load_actions_to_listbox()
+
+        except Exception as e:
+            messagebox.showerror("Erro de Importação", f"Não foi possível importar a ação.\n\nErro: {e}", parent=self)
+
+    def save_action(self):
+        action_name = self.name_entry.get().strip()
+        if not action_name:
+            messagebox.showerror("Erro", "O nome da ação não pode ser vazio.", parent=self)
+            return
+
+        # Sanitiza o nome do arquivo
+        safe_filename = "".join(c for c in action_name if c.isalnum() or c in (' ', '_')).rstrip()
+        safe_filename = f"{safe_filename}.json"
+        
+        filepath = os.path.join(self.actions_path, safe_filename)
+
+        # Se estamos renomeando, remove o arquivo antigo
+        if self.current_action_name and self.current_action_name != action_name:
+            old_filename = "".join(c for c in self.current_action_name if c.isalnum() or c in (' ', '_')).rstrip()
+            old_filepath = os.path.join(self.actions_path, f"{old_filename}.json")
+            if os.path.exists(old_filepath):
+                os.remove(old_filepath)
+
+        action_data = {
+            "name": action_name,
+            "description": self.desc_entry.get(),
+            "parameters": [p.strip() for p in self.params_entry.get().split(',') if p.strip()],
+            "code": self.code_text.get("1.0", tk.END)
+        }
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(action_data, f, indent=4)
+            
+            messagebox.showinfo("Sucesso", f"Ação '{action_name}' salva com sucesso!", parent=self)
+            
+            # Recarrega as ações na janela principal e atualiza a UI
+            self.parent._load_custom_actions()
+            self.parent.action_menu['values'] = self.parent.categorized_action_list
+            self.load_actions_to_listbox()
+        except Exception as e:
+            messagebox.showerror("Erro ao Salvar", f"Não foi possível salvar o arquivo da ação.\n\nErro: {e}", parent=self)
+
+    def delete_action(self):
+        selection = self.action_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Aviso", "Selecione uma ação para excluir.", parent=self)
+            return
+
+        action_name = self.action_listbox.get(selection[0])
+        if not messagebox.askyesno("Confirmar Exclusão", f"Tem certeza que deseja excluir permanentemente a ação '{action_name}'?", parent=self):
+            return
+
+        safe_filename = "".join(c for c in action_name if c.isalnum() or c in (' ', '_')).rstrip()
+        filepath = os.path.join(self.actions_path, f"{safe_filename}.json")
+
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            
+            # Limpa os campos
+            self.new_action()
+            
+            # Recarrega as ações
+            self.parent._load_custom_actions()
+            self.parent.action_menu['values'] = self.parent.categorized_action_list
+            self.load_actions_to_listbox()
+        except Exception as e:
+            messagebox.showerror("Erro ao Excluir", f"Não foi possível excluir o arquivo da ação.\n\nErro: {e}", parent=self)
 
 if __name__ == "__main__":
     main_window = tk.Tk()
